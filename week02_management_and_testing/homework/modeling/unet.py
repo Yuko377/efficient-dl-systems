@@ -82,7 +82,7 @@ class UnetModel(nn.Module):
         self.down1 = DownBlock(hidden_size, hidden_size)
         self.down2 = DownBlock(hidden_size, 2 * hidden_size)
         self.down3 = DownBlock(2 * hidden_size, 2 * hidden_size)
-
+        
         self.to_vec = nn.Sequential(nn.AvgPool2d(4), nn.ReLU())
 
         self.timestep_embedding = TimestepEmbedding(2 * hidden_size)
@@ -100,19 +100,32 @@ class UnetModel(nn.Module):
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         x = self.init_conv(x)
+        # up2 [N, h_s, size, size]
 
         down1 = self.down1(x)
+        # down1 [N, h_s, size / 2, size / 2]
         down2 = self.down2(down1)
+        # down2 [N, h_s * 2, size / 4, size / 4]
         down3 = self.down3(down2)
-
+        # down3 [N, h_s * 2, size / 8, size / 8]
         thro = self.to_vec(down3)
-        temb = self.timestep_embedding(t)
+        # thro [N, h_s * 2, size / 32, size / 32]
+        
+        # temb = self.timestep_embedding(t)      ----> cannot broadcast to thro shape, need to add dims 
+        temb = self.timestep_embedding(t)[:, :, None, None]
+        # temb [N, h_s * 2, 1, 1]
 
         thro = self.up0(thro + temb)
+        # thro [N, h_s * 2, size / 8, size / 8]
 
         up1 = self.up1(thro, down3) + temb
+        # up1 [N, h_s * 2, size / 4, size / 4]
+        
         up2 = self.up2(up1, down2)
+        # up2 [N, h_s, size / 2, size / 2]
+
         up3 = self.up3(up2, down1)
+        # up3 [N, h_s, size, size]
 
         out = self.out(torch.cat((up3, x), 1))
 

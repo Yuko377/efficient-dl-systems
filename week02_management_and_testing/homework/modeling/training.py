@@ -24,11 +24,16 @@ def train_epoch(model: DiffusionModel, dataloader: DataLoader, optimizer: Optimi
         train_loss = train_step(model, x, optimizer, device)
         loss_ema = train_loss if loss_ema is None else 0.9 * loss_ema + 0.1 * train_loss
         pbar.set_description(f"loss: {loss_ema:.4f}")
+    return loss_ema       ###
 
 
-def generate_samples(model: DiffusionModel, device: str, path: str):
+def generate_samples(model: DiffusionModel, device: str, path: str, add_path: str = None):
     model.eval()
     with torch.no_grad():
-        samples = model.sample(8, (3, 32, 32), device=device)
+        init_noise, samples = model.sample(8, (3, 32, 32), device=device)
         grid = make_grid(samples, nrow=4)
         save_image(grid, path)
+        if add_path is not None:
+            grid_noise = make_grid(init_noise, nrow=4)
+            save_image(grid_noise, add_path)
+    return init_noise, samples      ###

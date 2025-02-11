@@ -1,0 +1,15 @@
+stages:
+    prepare_data:
+        cmd: python3 prepare_data.py
+        deps:
+        - prepare_data.py
+        outs:
+        - cifar10
+    train_model:
+        cmd: python3 main.py
+        deps:
+        - hparams.py
+        - cifar10
+        - main.py
+        outs:
+        - samples

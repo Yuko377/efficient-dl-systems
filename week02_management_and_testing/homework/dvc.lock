@@ -1,0 +1,31 @@
+schema: '2.0'
+stages:
+  prepare_data:
+    cmd: python3 prepare_data.py
+    deps:
+    - path: prepare_data.py
+      md5: 871adf9a258b68d18f0069ebfb556b06
+      size: 159
+    outs:
+    - path: cifar10
+      md5: e252d2c8ba36d1ab3e21a873ab62daa3.dir
+      size: 356712185
+      nfiles: 9
+  train_model:
+    cmd: python3 main.py
+    deps:
+    - path: cifar10
+      md5: e252d2c8ba36d1ab3e21a873ab62daa3.dir
+      size: 356712185
+      nfiles: 9
+    - path: hparams.py
+      md5: 12613b995df6e591a33192dedf97215f
+      size: 160
+    - path: main.py
+      md5: 775e0ff5efe51e01779255763915b7b3
+      size: 1981
+    outs:
+    - path: samples
+      md5: 4811672023f46749adb482f8c84d7bc4.dir
+      size: 2542358
+      nfiles: 200

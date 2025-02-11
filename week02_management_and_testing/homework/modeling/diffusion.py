@@ -21,26 +21,27 @@ class DiffusionModel(nn.Module):
         self.criterion = nn.MSELoss()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        timestep = torch.randint(1, self.num_timesteps + 1, (x.shape[0],))
-        eps = torch.rand_like(x)
-
+        timestep = torch.randint(1, self.num_timesteps + 1, (x.shape[0],), device=x.device)  # --------> move timestep to right device
+        # eps = torch.rand_like(x)   ---------------> wrong distribution
+        eps = torch.randn_like(x, device=x.device)   #  device
         x_t = (
             self.sqrt_alphas_cumprod[timestep, None, None, None] * x
-            + self.one_minus_alpha_over_prod[timestep, None, None, None] * eps
+            # + self.one_minus_alpha_over_prod[timestep, None, None, None] * eps   --------> wrong multiplier
+            + self.sqrt_one_minus_alpha_prod[timestep, None, None, None] * eps
         )
 
         return self.criterion(eps, self.eps_model(x_t, timestep / self.num_timesteps))
 
     def sample(self, num_samples: int, size, device) -> torch.Tensor:
 
-        x_i = torch.randn(num_samples, *size)
-
+        x_i = torch.randn(num_samples, *size).to(device) ####  device
+        initial_noise = x_i.detach().clone()
         for i in range(self.num_timesteps, 0, -1):
-            z = torch.randn(num_samples, *size) if i > 1 else 0
+            z = torch.randn(num_samples, *size, device=device) if i > 1 else 0          ##### device
             eps = self.eps_model(x_i, torch.tensor(i / self.num_timesteps).repeat(num_samples, 1).to(device))
             x_i = self.inv_sqrt_alphas[i] * (x_i - eps * self.one_minus_alpha_over_prod[i]) + self.sqrt_betas[i] * z
 
-        return x_i
+        return initial_noise, x_i
 
 
 def get_schedules(beta1: float, beta2: float, num_timesteps: int) -> Dict[str, torch.Tensor]:
