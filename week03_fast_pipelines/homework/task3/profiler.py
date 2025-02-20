@@ -7,8 +7,11 @@ from collections import defaultdict
 
 class Profile:
     def __init__(self, model, name="model", schedule=None):
+        self.model = model
         self.name_map = self._build_name_map(model, name)
         self.events = []
+        self.timers = {}
+        self.hooks = []
         
         ### TODO
     
@@ -19,7 +22,7 @@ class Profile:
                 full_name = name
 
             if self._is_leaf(module):
-                name_map[module] = module.__class__.__name__
+                name_map[module] = f"{full_name}: {module.__class__.__name__}"#module.__class__.__name__
             else:
                 name_map[module] = f"{full_name}: {module.__class__.__name__}"
 
@@ -30,27 +33,44 @@ class Profile:
 
     def _forward_pre_hook(self, module, inputs):
         ### TODO
-        raise NotImplementedError
+        self.timers[f'fwd: {self.name_map[module]}'] = torch.cuda.Event(enable_timing=True)
+        torch.cuda.synchronize()
+        self.timers[f'fwd: {self.name_map[module]}'].record()
+
 
     def _forward_post_hook(self, module, inputs, outputs):
         ### TODO
-        raise NotImplementedError
+        ender = torch.cuda.Event(enable_timing=True)
+        ender.record()
+        torch.cuda.synchronize()
+        self.events.append(('fwd', self.name_map[module], self.timers[f'fwd: {self.name_map[module]}'].elapsed_time(ender)))
 
     def _backward_pre_hook(self, module, grad_output):
         ### TODO
-        raise NotImplementedError
-
+        self.timers[f'bwd: {self.name_map[module]}'] = torch.cuda.Event(enable_timing=True)
+        torch.cuda.synchronize()
+        self.timers[f'bwd: {self.name_map[module]}'].record()
+        
     def _backward_post_hook(self, module, grad_input, grad_output):
         ### TODO
-        raise NotImplementedError
-
+        ender = torch.cuda.Event(enable_timing=True)
+        ender.record()
+        torch.cuda.synchronize()
+        self.events.append(('bwd', self.name_map[module], self.timers[f'bwd: {self.name_map[module]}'].elapsed_time(ender)))
+        
     def __enter__(self):
         ### TODO
-        raise NotImplementedError
+        for _, module in self.model.named_modules():
+            self.hooks.append(module.register_forward_pre_hook(self._forward_pre_hook))
+            self.hooks.append(module.register_forward_hook(self._forward_post_hook))
+            self.hooks.append(module.register_full_backward_pre_hook(self._backward_pre_hook))
+            self.hooks.append(module.register_full_backward_hook(self._backward_post_hook))
  
     def __exit__(self, type, value, traceback):
         ### TODO
-        raise NotImplementedError
+        self.summary()
+        for handle in self.hooks:
+            handle.remove()
 
     def step(self):
         ### TODO
