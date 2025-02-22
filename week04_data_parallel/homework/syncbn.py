@@ -20,12 +20,47 @@ class sync_batch_norm(Function):
     def forward(ctx, input, running_mean, running_std, eps: float, momentum: float):
         # Compute statistics, sync statistics, apply them to the input
         # Also, store relevant quantities to be used on the backward pass with `ctx.save_for_backward`
-        pass
+        curr_sum = torch.sum(input, dim=0)
+        curr_sum_of_sq = torch.sum(input ** 2, dim=0)
+        stats = torch.cat([curr_sum, curr_sum_of_sq], dim=0) 
+        
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+        
+        
+        full_mean, full_mean_of_sq = torch.split(stats / (dist.get_world_size() * input.shape[0]), 5, dim=0)
+        print('full mean', full_mean)
+        full_std = full_mean_of_sq - full_mean ** 2
+        
+        # if dist.get_rank() == 0:
+        running_mean = (1 - momentum) * running_mean + momentum * full_mean
+        running_std = (1 - momentum) * running_mean + momentum * full_std
+        
+        ctx.save_for_backward(input, full_mean, full_std + eps)
+        
+        return (input - full_mean) / torch.sqrt(full_std + eps)
+        
 
     @staticmethod
     def backward(ctx, grad_output):
+        input, full_mean, full_std_eps = ctx.saved_tensors
+        x_normed = (input - full_mean) / torch.sqrt(full_std_eps)
+        grad_normed_x = grad_output
+        
+        pre_grad_std = torch.sum(grad_normed_x * (input - full_mean), dim=0)  # -1/2 * full_std_eps ** (-3/2) * 
+        pre_grad_mu =  torch.sum(grad_normed_x, dim=0) # -1 / torch.sqrt(full_std_eps) *
+        
+        stats = torch.cat([pre_grad_std, pre_grad_mu], dim=0)
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+        pre_grad_std, pre_grad_mu = torch.split(stats, 5, dim=0)
+        
+        grad_std = -1/2 * full_std_eps ** (-3/2) * pre_grad_std
+        grad_mu *= -1 / torch.sqrt(full_std_eps) * pre_grad_mu        
+        
+        grad_inp = grad_normed_x / torch.sqrt(full_std_eps) + (grad_std * 2 * (input - full_mean) + grad_mu) / float(dist.get_world_size())
+        
         # don't forget to return a tuple of gradients wrt all arguments of `forward`!
-        pass
+        
+        return grad_inp, None, None, None, None
 
 
 class SyncBatchNorm(_BatchNorm):
@@ -50,4 +85,5 @@ class SyncBatchNorm(_BatchNorm):
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         # You will probably need to use `sync_batch_norm` from above
-        pass
+        return sync_batch_norm.apply(input, self.running_mean, self.running_std, self.eps, self.momentum)
+        
