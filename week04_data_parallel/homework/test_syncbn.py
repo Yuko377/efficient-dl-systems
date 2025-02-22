@@ -1,65 +1,67 @@
 import torch
 from syncbn import SyncBatchNorm
-import time
+import pytest
 import random
 import torch.distributed as dist
+
 import os
 
+@pytest.mark.parametrize("num_workers", [1, 4])
+@pytest.mark.parametrize("hid_dim", [128, 256, 512, 1024])
+@pytest.mark.parametrize("batch_size", [32, 64])
 def test_batchnorm(num_workers, hid_dim, batch_size):
-    # Verify that the implementation of SyncBatchNorm gives the same results (both for outputs
-    # and gradients with respect to input) as torch.nn.BatchNorm1d on a variety of inputs.
+    size = num_workers
+    feature_num = hid_dim
 
-    # This can help you set up the worker processes. Child processes launched with `spawn` can still run
-    # torch.distributed primitives, but you can also communicate their outputs back to the main process to compare them
-    # with the outputs of a non-synchronous BatchNorm.
-    ctx = torch.multiprocessing.get_context("spawn")
+    data = torch.randn(batch_size, feature_num)
+    data.requires_grad = True
+    bn = torch.nn.BatchNorm1d(feature_num, affine=False, track_running_stats=True)
+    full_real_out = bn(data)
+    loss = torch.sum(full_real_out[:batch_size // 2])
+    loss.backward()
+    real_grad = data.grad
+    processes = []
+    port = random.randint(25000, 30000)
 
-    pass
+    mini_batch_size = batch_size // size
 
-def bn_test(rank, input_tensor, sbn, q):
-    # print('World size', dist.get_world_size())
-    # print('Rank ', rank, ' has inp ', input_tensor)
-    out = sbn(input_tensor)
-    print('Rank ', rank, ' has out ', out)
+    for rank in range(size):
+        ctx = torch.multiprocessing.get_context("spawn")
+        p = ctx.Process(target=init_process, args=(rank,
+                                                   size, 
+                                                   bn_test, 
+                                                   data[rank * mini_batch_size: rank*mini_batch_size + mini_batch_size].detach(), 
+                                                   full_real_out[rank * mini_batch_size: rank*mini_batch_size + mini_batch_size].detach(),
+                                                   real_grad[rank * mini_batch_size: rank*mini_batch_size + mini_batch_size].detach(),
+                                                   port))
+        p.start()
+        processes.append(p)
 
-    q.put((out, rank))
+    for p in processes:
+        p.join()
 
-    
-    
 
-def init_process(rank, size, fn, inp_tensor, sbn, q, master_port, backend='gloo'):
+def bn_test(rank, input_chunk_, real_out, real_grad):
+    input_chunk = input_chunk_.clone().detach()
+    input_chunk.requires_grad = True
+    sbn = SyncBatchNorm(5)
+    out = sbn(input_chunk)
+    # print('Rank ', rank, ' has out ', out)
+    assert torch.allclose(out, real_out, atol=1e-3)
+    if dist.get_world_size() == 1:
+        loss = torch.sum(out[:out.shape[0] // 2])
+    elif rank * input_chunk.shape[0] < dist.get_world_size():
+        loss = torch.sum(out)
+    else:
+        loss = (0 * torch.sum(out))
+    loss.backward()
+    assert torch.allclose(input_chunk.grad, real_grad, atol=1e-3), rank
+
+
+def init_process(rank, size, fn, input_chunk, real_out, real_grad, master_port, backend='gloo'):
     """ Initialize the distributed environment. """
     os.environ['MASTER_ADDR'] = '127.0.0.1'
     os.environ['MASTER_PORT'] = str(master_port)
     dist.init_process_group(backend, rank=rank, world_size=size)
-    fn(rank, inp_tensor, sbn, q)
 
-                
-if __name__ == "__main__":
-    size = 2
-    data = torch.Tensor([[1., 1., 1., 1., 1.],
-                       [ 0., 0., 0., 0., 0.],
-                       [ 0., 0., 0., 0., 0.],
-                       [ 0., 0., 0., 0., 0.]])
-    # data.requires_grad_()
-    processes = []
-    sbn = SyncBatchNorm(5)
-    port = random.randint(25000, 30000)
-    results = []
-    ctx = torch.multiprocessing.get_context("spawn")
-    q = ctx.Queue()
-    for rank in range(size):
-        p = ctx.Process(target=init_process, args=(rank, size, bn_test, data[rank*2:rank*2 + 2, ], sbn, q, port))
-        print('1')
-        p.start()
-        processes.append(p)
-        print(q.get())
-        
-    for el in results:
-        print(el)
-    
-
-    for p in processes:
-        p.join()
-        
-    print(data)
+    fn(rank, input_chunk, real_out, real_grad)

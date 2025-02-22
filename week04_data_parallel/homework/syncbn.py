@@ -27,13 +27,12 @@ class sync_batch_norm(Function):
         dist.all_reduce(stats, op=dist.ReduceOp.SUM)
         
         
-        full_mean, full_mean_of_sq = torch.split(stats / (dist.get_world_size() * input.shape[0]), 5, dim=0)
-        print('full mean', full_mean)
+        full_mean, full_mean_of_sq = (stats / (dist.get_world_size() * input.shape[0])).chunk(2)
         full_std = full_mean_of_sq - full_mean ** 2
         
         # if dist.get_rank() == 0:
         running_mean = (1 - momentum) * running_mean + momentum * full_mean
-        running_std = (1 - momentum) * running_mean + momentum * full_std
+        running_std = (1 - momentum) * running_std + momentum * full_std
         
         ctx.save_for_backward(input, full_mean, full_std + eps)
         
@@ -43,20 +42,18 @@ class sync_batch_norm(Function):
     @staticmethod
     def backward(ctx, grad_output):
         input, full_mean, full_std_eps = ctx.saved_tensors
-        x_normed = (input - full_mean) / torch.sqrt(full_std_eps)
         grad_normed_x = grad_output
         
-        pre_grad_std = torch.sum(grad_normed_x * (input - full_mean), dim=0)  # -1/2 * full_std_eps ** (-3/2) * 
-        pre_grad_mu =  torch.sum(grad_normed_x, dim=0) # -1 / torch.sqrt(full_std_eps) *
+        pre_grad_std = torch.sum(grad_normed_x * (input - full_mean), dim=0)  
+        pre_grad_mu =  torch.sum(grad_normed_x, dim=0) 
         
         stats = torch.cat([pre_grad_std, pre_grad_mu], dim=0)
         dist.all_reduce(stats, op=dist.ReduceOp.SUM)
-        pre_grad_std, pre_grad_mu = torch.split(stats, 5, dim=0)
-        
+        pre_grad_std, pre_grad_mu = stats.chunk(2) 
         grad_std = -1/2 * full_std_eps ** (-3/2) * pre_grad_std
-        grad_mu *= -1 / torch.sqrt(full_std_eps) * pre_grad_mu        
+        grad_mu = -1 / torch.sqrt(full_std_eps) * pre_grad_mu        
         
-        grad_inp = grad_normed_x / torch.sqrt(full_std_eps) + (grad_std * 2 * (input - full_mean) + grad_mu) / float(dist.get_world_size())
+        grad_inp = grad_normed_x / torch.sqrt(full_std_eps) + (grad_std * 2 * (input - full_mean) + grad_mu) / float(dist.get_world_size() * grad_output.shape[0])
         
         # don't forget to return a tuple of gradients wrt all arguments of `forward`!
         

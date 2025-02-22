@@ -7,16 +7,18 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel
 from torchvision.datasets import CIFAR100
+from syncbn import SyncBatchNorm
 
 torch.set_num_threads(1)
 
 
-def init_process(local_rank, fn, backend="nccl"):
+def init_process(local_rank, fn, custom, backend="nccl"):
     """Initialize the distributed environment."""
     dist.init_process_group(backend, rank=local_rank)
     size = dist.get_world_size()
-    fn(local_rank, size)
+    fn(local_rank, size, custom)
 
 
 class Net(nn.Module):
@@ -25,7 +27,7 @@ class Net(nn.Module):
     Feel free to replace it with EffNetV2-XL once you get comfortable injecting SyncBN into models programmatically.
     """
 
-    def __init__(self):
+    def __init__(self, custom=False):
         super().__init__()
         self.conv1 = nn.Conv2d(3, 32, 3, 1)
         self.conv2 = nn.Conv2d(32, 32, 3, 1)
@@ -33,7 +35,7 @@ class Net(nn.Module):
         self.dropout2 = nn.Dropout(0.5)
         self.fc1 = nn.Linear(6272, 128)
         self.fc2 = nn.Linear(128, 100)
-        self.bn1 = nn.BatchNorm1d(128, affine=False)  # to be replaced with SyncBatchNorm
+        self.bn1 = SyncBatchNorm(128) if custom else nn.BatchNorm1d(128, affine=False)  # to be replaced with SyncBatchNorm
 
     def forward(self, x):
         x = self.conv1(x)
@@ -61,7 +63,7 @@ def average_gradients(model):
         param.grad.data /= size
 
 
-def run_training(rank, size):
+def run_training(rank, size, custom):
     torch.manual_seed(0)
 
     dataset = CIFAR100(
@@ -72,12 +74,12 @@ def run_training(rank, size):
                 transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
             ]
         ),
-        download=True,
+        download=False,
     )
     # where's the validation dataset?
     loader = DataLoader(dataset, sampler=DistributedSampler(dataset, size, rank), batch_size=64)
 
-    model = Net()
+    model = Net(custom=True) if custom else DistributedDataParallel(nn.SyncBatchNorm.convert_sync_batchnorm(Net(custom=False)))
     device = torch.device("cpu")  # replace with "cuda" afterwards
     model.to(device)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
@@ -108,4 +110,4 @@ def run_training(rank, size):
 
 if __name__ == "__main__":
     local_rank = int(os.environ["LOCAL_RANK"])
-    init_process(local_rank, fn=run_training, backend="gloo")  # replace with "nccl" when testing on several GPUs
+    init_process(local_rank, fn=run_training, custom=False, backend="gloo")  # replace with "nccl" when testing on several GPUs
