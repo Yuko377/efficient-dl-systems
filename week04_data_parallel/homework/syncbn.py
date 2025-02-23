@@ -30,7 +30,6 @@ class sync_batch_norm(Function):
         full_mean, full_mean_of_sq = (stats / (dist.get_world_size() * input.shape[0])).chunk(2)
         full_std = full_mean_of_sq - full_mean ** 2
         
-        # if dist.get_rank() == 0:
         running_mean = (1 - momentum) * running_mean + momentum * full_mean
         running_std = (1 - momentum) * running_std + momentum * full_std
         
@@ -51,7 +50,7 @@ class sync_batch_norm(Function):
         dist.all_reduce(stats, op=dist.ReduceOp.SUM)
         pre_grad_std, pre_grad_mu = stats.chunk(2) 
         grad_std = -1/2 * full_std_eps ** (-3/2) * pre_grad_std
-        grad_mu = -1 / torch.sqrt(full_std_eps) * pre_grad_mu        
+        grad_mu = -1 / torch.sqrt(full_std_eps) * pre_grad_mu 
         
         grad_inp = grad_normed_x / torch.sqrt(full_std_eps) + (grad_std * 2 * (input - full_mean) + grad_mu) / float(dist.get_world_size() * grad_output.shape[0])
         
